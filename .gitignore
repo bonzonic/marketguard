@@ -1,0 +1,22 @@
+# Recorded market data - never commit. Gigabytes per day.
+data/
+*.jsonl.gz
+*.parquet
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local config / secrets
+.env
+.env.local
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
