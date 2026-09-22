@@ -92,6 +92,24 @@ def _stream_of(raw: str) -> str:
         return "unknown"
 
 
+def _stamp(raw: str) -> str:
+    """Prepend a receive timestamp in milliseconds.
+
+    Partial book depth streams (@depth20) carry NO timestamp - only
+    lastUpdateId, bids and asks. Spoofing detection is entirely about order
+    lifetime in milliseconds, so without a clock on the depth stream the
+    primary detector cannot be built at all.
+
+    aggTrade timestamps are too sparse to interpolate from (some pairs trade
+    once every few seconds), and lastUpdateId gives ordering but not duration.
+    So we stamp on receipt.
+
+    Done as a string splice rather than parse-and-reserialise: the payload is
+    always {"stream":...}, so replacing the leading brace is enough.
+    """
+    return '{"t":' + str(time.time_ns() // 1_000_000) + "," + raw[1:]
+
+
 async def record() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -136,7 +154,7 @@ async def record() -> None:
                         hour_count = 0
                         _log(f"opened {path.name}  ({free:.1f} GB free)")
 
-                    fh.write(raw)
+                    fh.write(_stamp(raw))
                     fh.write("\n")
                     hour_count += 1
                     stats[_stream_of(raw)] += 1

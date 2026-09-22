@@ -26,7 +26,7 @@ from typing import Iterator
 # everything decoded before that point is valid.
 _TRUNCATED = (EOFError, OSError, zlib.error)
 
-_HOUR_RE = re.compile(r"binance_(\d{8}T\d{2})")
+_NAME_RE = re.compile(r"binance_(\d{8}T\d{2})(?:\.(\d+))?\.jsonl\.gz$")
 
 
 def read_lines(path: Path | str) -> Iterator[str]:
@@ -71,6 +71,17 @@ def read_messages(path: Path | str) -> Iterator[dict]:
             yield msg
 
 
+def timestamp(msg: dict) -> int | None:
+    """Milliseconds for a message, or None if it predates receive-stamping.
+
+    Prefers the exchange's own event time where it exists (trades), falling
+    back to the recorder's receive stamp. Depth snapshots have no exchange
+    timestamp at all, so for those the receive stamp is the only clock.
+    """
+    event_time = msg.get("data", {}).get("E")
+    return event_time if event_time is not None else msg.get("t")
+
+
 def message_id(msg: dict) -> tuple:
     """Stable identity for a message, used to deduplicate overlapping files.
 
@@ -82,16 +93,29 @@ def message_id(msg: dict) -> tuple:
     return (stream, data.get("lastUpdateId") or data.get("a"))
 
 
+def _sort_key(path: Path) -> tuple[str, int]:
+    """Order by hour, then by restart sequence within that hour.
+
+    Plain string sort gets this wrong: "...T15.1.jsonl.gz" sorts *before*
+    "...T15.jsonl.gz" because "." < "j", which would yield a later restart's
+    data ahead of the earlier file's.
+    """
+    match = _NAME_RE.match(path.name)
+    if not match:
+        return (path.name, 0)
+    return (match.group(1), int(match.group(2) or 0))
+
+
 def data_files(data_dir: Path | str = "data") -> list[Path]:
     """All recorded files, oldest first."""
-    return sorted(Path(data_dir).glob("binance_*.jsonl.gz"))
+    return sorted(Path(data_dir).glob("binance_*.jsonl.gz"), key=_sort_key)
 
 
 def files_by_hour(data_dir: Path | str = "data") -> dict[str, list[Path]]:
-    """Recorded files grouped by the hour they cover."""
+    """Recorded files grouped by the hour they cover, in sequence order."""
     groups: dict[str, list[Path]] = {}
     for path in data_files(data_dir):
-        match = _HOUR_RE.match(path.name)
+        match = _NAME_RE.match(path.name)
         if match:
             groups.setdefault(match.group(1), []).append(path)
     return groups
