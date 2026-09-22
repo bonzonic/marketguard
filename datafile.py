@@ -82,6 +82,17 @@ def timestamp(msg: dict) -> int | None:
     return event_time if event_time is not None else msg.get("t")
 
 
+def is_estimated(msg: dict) -> bool:
+    """True if this message's timestamp was reconstructed, not measured.
+
+    Files recorded before receive-stamping existed had their depth timestamps
+    interpolated from surrounding trades (see backfill.py). Measured accuracy
+    is ~22ms median, ~67ms p90 - fine for volume and pump windows, marginal
+    for sub-100ms spoof lifetimes. Skip these where precision matters.
+    """
+    return bool(msg.get("est"))
+
+
 def message_id(msg: dict) -> tuple:
     """Stable identity for a message, used to deduplicate overlapping files.
 

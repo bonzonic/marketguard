@@ -124,15 +124,55 @@ tolerate the truncated tail of a file still being written.
 
 ### Data format
 
-One JSON object per line, exactly as received from Binance:
+One JSON object per line. `t` is the recorder's receive time in milliseconds.
 
 ```json
-{"stream":"solusdt@depth20@100ms","data":{"lastUpdateId":123,"bids":[["1.23","45.6"]],"asks":[["1.24","78.9"]]}}
-{"stream":"solusdt@aggTrade","data":{"e":"aggTrade","E":1234567890123,"s":"SOLUSDT","p":"1.235","q":"10.0","m":false}}
+{"t":1790090601632,"stream":"solusdt@depth20@100ms","data":{"lastUpdateId":123,"bids":[["1.23","45.6"]],"asks":[["1.24","78.9"]]}}
+{"t":1790090601640,"stream":"solusdt@aggTrade","data":{"e":"aggTrade","E":1790090601357,"s":"SOLUSDT","p":"1.235","q":"10.0","m":false}}
 ```
 
-All analysis uses Binance's server-side timestamp (`E`), not arrival time, so
-network latency does not distort any downstream feature.
+`m` is the field that matters most in the trade stream, and it inverts:
+`m: false` means the **buyer** crossed the spread (aggressive buy), `m: true`
+means the **seller** did. Order flow imbalance depends on getting this right.
+
+#### Why `t` exists
+
+Partial book depth streams carry **no timestamp** — only `lastUpdateId`,
+`bids` and `asks`. Spoofing detection is entirely about order lifetime in
+milliseconds, so without a clock on the depth stream the primary detector
+cannot be built. The recorder stamps every message on receipt.
+
+Measured inter-message gap for `solusdt@depth20@100ms` is a median of 100ms,
+matching the stream cadence, so lifetimes down to ~200ms are measurable.
+
+#### Reconstructed timestamps
+
+Files recorded before stamping existed were backfilled by interpolating
+between surrounding trades, which do carry an exchange event time:
+
+```powershell
+.\venv\Scripts\python backfill.py --dry-run
+.\venv\Scripts\python backfill.py
+```
+
+Those messages carry `"est":1`. Accuracy was validated against files where the
+true receive time is known:
+
+| | error |
+|---|---|
+| median | 22 ms |
+| p90 | 67 ms |
+| p99 | 174 ms |
+| max | 375 ms |
+
+Fine for volume and pump-window analysis, marginal for sub-100ms spoof
+lifetimes. Use `datafile.is_estimated(msg)` to filter them out where precision
+matters.
+
+> Note: exchange event time runs ~900ms behind local receive time on the
+> recording machine. That is a constant offset, so it does not affect relative
+> measurements like order lifetime — but it matters if you correlate against
+> external event times.
 
 ---
 
