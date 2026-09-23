@@ -20,7 +20,9 @@ from pathlib import Path
 
 import duckdb
 
-PARQUET = Path(__file__).parent / "parquet"
+import config
+
+PARQUET = config.PARQUET_DIR
 
 
 def connect(parquet_dir: Path = PARQUET) -> duckdb.DuckDBPyConnection:

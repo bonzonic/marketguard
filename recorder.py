@@ -23,6 +23,8 @@ from pathlib import Path
 
 import websockets
 
+import config
+
 # Mid-caps: active enough to have real order book behaviour, thin enough to be
 # worth manipulating. BTC/ETH deliberately excluded - too deep to move.
 SYMBOLS = [
@@ -34,7 +36,7 @@ SYMBOLS = [
     "opusdt",
 ]
 
-OUT_DIR = Path(__file__).parent / "data"
+OUT_DIR = config.DATA_DIR
 WS_BASE = "wss://stream.binance.com:9443/stream?streams="
 
 # Stop writing before the disk fills. A full disk kills the recording silently;
@@ -124,7 +126,8 @@ async def record() -> None:
     last_flush = last_stats
 
     _log(f"starting - {len(SYMBOLS)} symbols, {len(SYMBOLS) * 2} streams")
-    _log(f"writing to {OUT_DIR}  ({_free_gb(OUT_DIR):.1f} GB free)")
+    _log(config.describe())
+    _log(f"{_free_gb(OUT_DIR):.1f} GB free")
 
     while _running:
         try:

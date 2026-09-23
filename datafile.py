@@ -20,6 +20,8 @@ import zlib
 from pathlib import Path
 from typing import Iterator
 
+import config
+
 # Errors that mean "this file ends early", not "this file is unusable".
 # A process killed mid-write leaves a truncated gzip member; depending on
 # where the cut lands you get EOFError or a zlib decode failure. Either way
@@ -117,12 +119,13 @@ def _sort_key(path: Path) -> tuple[str, int]:
     return (match.group(1), int(match.group(2) or 0))
 
 
-def data_files(data_dir: Path | str = "data") -> list[Path]:
+def data_files(data_dir: Path | str | None = None) -> list[Path]:
     """All recorded files, oldest first."""
-    return sorted(Path(data_dir).glob("binance_*.jsonl.gz"), key=_sort_key)
+    root = Path(data_dir) if data_dir is not None else config.DATA_DIR
+    return sorted(root.glob("binance_*.jsonl.gz"), key=_sort_key)
 
 
-def files_by_hour(data_dir: Path | str = "data") -> dict[str, list[Path]]:
+def files_by_hour(data_dir: Path | str | None = None) -> dict[str, list[Path]]:
     """Recorded files grouped by the hour they cover, in sequence order."""
     groups: dict[str, list[Path]] = {}
     for path in data_files(data_dir):
@@ -132,7 +135,7 @@ def files_by_hour(data_dir: Path | str = "data") -> dict[str, list[Path]]:
     return groups
 
 
-def read_all(data_dir: Path | str = "data", symbol: str | None = None) -> Iterator[dict]:
+def read_all(data_dir: Path | str | None = None, symbol: str | None = None) -> Iterator[dict]:
     """Yield every recorded message, deduplicated, in chronological order.
 
     Deduplication is scoped per hour so the seen-set stays bounded - duplicate
@@ -158,7 +161,7 @@ if __name__ == "__main__":
     import collections
     import sys
 
-    data_dir = sys.argv[1] if len(sys.argv) > 1 else "data"
+    data_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else config.DATA_DIR
     groups = files_by_hour(data_dir)
     if not groups:
         print(f"no data files in {data_dir}/")

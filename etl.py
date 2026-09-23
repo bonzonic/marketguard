@@ -25,7 +25,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from datafile import files_by_hour, read_all, timestamp
+import config
+from datafile import files_by_hour, timestamp
 
 LEVEL = pa.struct([("price", pa.float64()), ("qty", pa.float64())])
 
@@ -140,8 +141,9 @@ def read_all_paths(paths: list[Path]):
 def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     force = "--force" in sys.argv
-    data_dir = Path(args[0]) if args else Path("data")
-    out_dir = data_dir.parent / "parquet"
+    data_dir = Path(args[0]) if args else config.DATA_DIR
+    out_dir = data_dir.parent / "parquet" if args else config.PARQUET_DIR
+    print(config.describe())
 
     (out_dir / "book").mkdir(parents=True, exist_ok=True)
     (out_dir / "trades").mkdir(parents=True, exist_ok=True)

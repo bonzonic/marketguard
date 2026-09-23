@@ -26,6 +26,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import config
 from datafile import _TRUNCATED, data_files
 
 _EVENT_TIME = re.compile(rb'"E":(\d{13})')
@@ -137,7 +138,7 @@ def backfill(path: Path, dry_run: bool = False) -> tuple[int, int] | None:
 def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     dry_run = "--dry-run" in sys.argv
-    data_dir = Path(args[0]) if args else Path("data")
+    data_dir = Path(args[0]) if args else config.DATA_DIR
 
     files = data_files(data_dir)
     if not files:
