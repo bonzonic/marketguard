@@ -176,6 +176,44 @@ matters.
 
 ---
 
+## Querying the data
+
+The recordings are append-only and immutable, and every useful query is an
+aggregation over a time range rather than a point lookup. That is the
+analytical access pattern, so the data goes to **Parquet + DuckDB** rather
+than a row store — full SQL, no server, no migrations.
+
+```powershell
+.\venv\Scripts\python etl.py      # JSONL -> parquet/ (incremental)
+.\venv\Scripts\python query.py    # coverage + trade flow summary
+```
+
+```powershell
+.\venv\Scripts\python query.py "SELECT symbol, count(*) FROM book GROUP BY 1"
+```
+
+Two views are registered:
+
+| view | grain | columns |
+|---|---|---|
+| `book` | one row per snapshot | `t, symbol, best_bid, best_ask, mid, spread, bid_depth, ask_depth, bids, asks, est` |
+| `trades` | one row per trade | `t, event_time, symbol, price, qty, is_buyer_maker, aggressive_buy` |
+
+`bids` / `asks` are list columns of `{price, qty}`. Most queries only need the
+precomputed scalars; `UNNEST` when per-level detail is required. Exploding
+every snapshot into 40 level-rows would mean ~67M rows/day and inflates
+storage for no gain.
+
+### ⚠️ Comparing depth across snapshots
+
+Quantity at "the best bid" is **not comparable between snapshots unless the
+best bid price is unchanged.** Top of book flickers between adjacent ticks
+with tiny resting sizes, so a naive `lag(best_bid_qty)` produces enormous
+multipliers that are pure artifact — and they look exactly like dramatic
+findings. Always constrain with `best_bid = prev_bid`.
+
+---
+
 ## Why `@depth20@100ms`
 
 Binance offers order book **diffs** (`@depth`) and **snapshots** (`@depth20`).
