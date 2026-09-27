@@ -59,11 +59,39 @@ TRADE_SCHEMA = pa.schema([
 ])
 
 
+class MalformedLevels(ValueError):
+    """A depth message whose level arrays are not [[price, qty], ...]."""
+
+
 def _levels(raw: list) -> tuple[list[dict], float]:
-    """Parse [[price, qty], ...] into structs, returning total quantity."""
+    """Parse [[price, qty], ...] into structs, returning total quantity.
+
+    Raises MalformedLevels if any entry is not a two-element pair.
+
+    Rejecting the whole snapshot rather than the offending entry is the point.
+    A malformed level is evidence the *line* was spliced, not that one price
+    was unusual - observed in the wild as a single arbusdt snapshot carrying
+    both a three-element and a one-element level, three bad entries among
+    23,789 good ones across the same two hours.
+
+    read_messages() only requires a record to be a dict with `stream` and
+    `data`, which a fragment of a truncated line can satisfy while its inner
+    structure is already corrupt. That check cannot be tightened cheaply
+    without parsing every level on every read, so the validation belongs
+    here, where we parse them anyway.
+
+    The remaining levels in such a snapshot are no more trustworthy than the
+    broken one, and the failure is silent: a truncated ask list looks exactly
+    like a thin book, and a spliced quantity looks exactly like a wall. One
+    dropped snapshot out of ~150k an hour costs nothing measurable. One
+    fabricated wall costs a false verdict.
+    """
     out = []
     total = 0.0
-    for price, qty in raw:
+    for entry in raw:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            raise MalformedLevels(repr(entry)[:80])
+        price, qty = entry
         q = float(qty)
         out.append({"price": float(price), "qty": q})
         total += q
@@ -96,8 +124,14 @@ def convert_hour(paths: list[Path]) -> tuple[pa.Table, pa.Table]:
             trades["aggressive_buy"].append(not maker)
             continue
 
-        bids, bid_depth = _levels(data["bids"])
-        asks, ask_depth = _levels(data["asks"])
+        try:
+            bids, bid_depth = _levels(data["bids"])
+            asks, ask_depth = _levels(data["asks"])
+        except MalformedLevels as exc:
+            # Loud rather than silent: this should be vanishingly rare, and a
+            # rising count means the recorder or the reader is losing framing.
+            print(f"    skipped malformed snapshot  {stream}  t={msg.get('t')}  {exc}")
+            continue
         if not bids or not asks:
             continue
 
