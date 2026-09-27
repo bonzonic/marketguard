@@ -24,6 +24,7 @@ from pathlib import Path
 import websockets
 
 import config
+import keepawake
 
 # Mid-caps: active enough to have real order book behaviour, thin enough to be
 # worth manipulating. BTC/ETH deliberately excluded - too deep to move.
@@ -128,6 +129,10 @@ async def record() -> None:
     _log(f"starting - {len(SYMBOLS)} symbols, {len(SYMBOLS) * 2} streams")
     _log(config.describe())
     _log(f"{_free_gb(OUT_DIR):.1f} GB free")
+    # Asserted from the thread that then runs the event loop, because the
+    # request dies with its thread. See keepawake.py for why this rather than
+    # a power-scheme change.
+    _log(keepawake.hold())
 
     while _running:
         try:
@@ -168,6 +173,10 @@ async def record() -> None:
                         last_flush = now
 
                     if now - last_stats >= STATS_INTERVAL_S:
+                        # Cheap insurance: one syscall every five minutes puts
+                        # the no-sleep request back if anything cleared it
+                        # (a power-scheme change, a fast-startup resume).
+                        keepawake.hold()
                         total = sum(stats.values())
                         rate = total / (now - last_stats)
                         top = ", ".join(
@@ -185,6 +194,7 @@ async def record() -> None:
 
     if fh:
         fh.close()
+    keepawake.release()
     _log("stopped cleanly")
 
 
