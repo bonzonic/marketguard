@@ -19,7 +19,7 @@ fleeced.
 | Component | State |
 |---|---|
 | Recorder | ✅ working |
-| Feature extractor | 🔜 |
+| Feature extractor | ✅ batch path working |
 | Spoofing detector | 🔜 |
 | Pump & dump detector | 🔜 |
 | Nemotron cascade | 🔜 |
@@ -203,6 +203,48 @@ Two views are registered:
 precomputed scalars; `UNNEST` when per-level detail is required. Exploding
 every snapshot into 40 level-rows would mean ~67M rows/day and inflates
 storage for no gain.
+
+---
+
+## Features
+
+`features.py` computes the rolling features every detector consumes, per
+symbol, over configurable windows. Batch/historical only for now — over
+Parquet via DuckDB, which is what the auto-labeller and threshold tuning
+need and the only path that can be validated against real capture.
+`FeatureExtractor` is the ABC a future streaming implementation must satisfy.
+
+```powershell
+.\venv\Scripts\python features.py              # diagnostic over every symbol
+.\venv\Scripts\python features.py solusdt 51   # one symbol, 51 hours
+.\venv\Scripts\python -m pytest test_features.py
+```
+
+| Feature | Grain | Fires |
+|---|---|---|
+| Volume z-score | bar | z > 5 notable, z > 10 extreme |
+| Thin-book percentile | bar | below p20 of its own trailing distribution |
+| Wall detection | level | above the p99 of its **price band** *and* within 20bps of mid |
+| Order flow imbalance | window of bars | — |
+| Retracement ratio | bar | above 0.7 |
+| Level lifetime, cancel/fill | episode | — |
+
+Median and MAD, never mean and stdev: a trailing window wide enough to be a
+useful baseline also contains previous pumps, which inflate σ and mask the
+next one.
+
+### ⚠️ Missing history is a state, not a number
+
+Only ~3 days of capture exist and the recorder stopped and restarted inside
+it, so trailing windows are routinely short. Every value carries a `Status`
+— `ok`, `partial_history` (computed, visibly degraded), `insufficient_history`
+(`None`), `no_data`, `zero_scale`, `no_pump`. `Windowed.require()` raises
+rather than let a caller read through a gap.
+
+A bar counts as *covered* only if it saw a snapshot or a trade. Left-joining
+a dense minute grid onto the trades table otherwise turns every un-recorded
+minute into a `0.0`, and a window half full of fabricated zeros drives the
+median to 0, the MAD to 0, and the z-score to nonsense.
 
 ### ⚠️ Comparing depth across snapshots
 
