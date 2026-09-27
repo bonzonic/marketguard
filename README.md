@@ -21,7 +21,7 @@ fleeced.
 | Recorder | ✅ working |
 | Feature extractor | ✅ batch path working |
 | Spoofing detector | 🔜 |
-| Pump & dump detector | 🔜 |
+| Pump & dump gate | ✅ statistical gate; no LLM stage yet |
 | Nemotron cascade | 🔜 |
 | Frontend | 🔜 |
 
@@ -67,7 +67,7 @@ surveillance across many symbols economically possible.
 | Detector | Status | Notes |
 |---|---|---|
 | **Spoofing** | planned | Large orders near mid, cancelled unfilled, repeated |
-| **Pump & dump** | planned | Volume z-score + one-sided flow + thin book + retracement |
+| **Pump & dump** | gate built | Volume z-score + vol-normalised spike + thin book + one-sided flow; retracement confirms, retrospectively |
 | Layering | stretch | Reuses spoofing machinery |
 | ~~Wash trading~~ | **excluded** | Requires account identity — not available on public feeds |
 
@@ -447,6 +447,105 @@ A bar counts as *covered* only if it saw a snapshot or a trade. Left-joining
 a dense minute grid onto the trades table otherwise turns every un-recorded
 minute into a `0.0`, and a window half full of fabricated zeros drives the
 median to 0, the MAD to 0, and the z-score to nonsense.
+
+---
+
+## Pump & dump gate
+
+`pumpdump.py` is the cheap filter in front of the LLM cascade. It consumes
+`features.py` bars and emits a **candidate** when four things are
+simultaneously true: volume z-score past the notable cut, a price spike large
+*for that symbol*, depth within ±1% of mid below the p20 of its own trailing
+distribution, and order flow imbalance approaching +1.0. A fifth leg — no news
+catalyst — is a seam (`CatalystSource`), not an implementation; the default
+`UncheckedCatalyst` returns `unknown`, never `absent`.
+
+```powershell
+.\venv\Scripts\python pumpdump.py                  # gate over every symbol, 24h
+.\venv\Scripts\python pumpdump.py solusdt 72       # one symbol, 72 hours
+.\venv\Scripts\python pumpdump.py --distributions  # what the features actually do
+.\venv\Scripts\python -m pytest test_pumpdump.py
+```
+
+### Probabilistic and confirmed are different types
+
+The retracement ratio is the *confirming* signal and it is **retrospective**:
+it needs the trough, and at the moment an alert fires the trough has not
+happened. A live alert is a probability; a retracement is a finding. Blurring
+them is how a surveillance system ends up accusing someone.
+
+So the distinction is structural rather than a comment or a boolean:
+
+| | `Candidate` | `ConfirmedDump` |
+|---|---|---|
+| when | at the end of its own bar | only after `observation_bars` more |
+| retracement field | **does not exist** | required |
+| how constructed | `PumpDumpGate.evaluate()` | `confirm()` only |
+| headline text | `CANDIDATE (probabilistic, unconfirmed)` | `CONFIRMED retracement` |
+
+`ConfirmedDump` deliberately does not re-export the candidate's fields — reach
+them through `.candidate` — so a renderer written for one raises
+`AttributeError` on the other instead of quietly relabelling it. And
+`confirm()` raises `PrematureConfirmation` unless it is handed bars extending
+past the candidate's window, so there is no code path from a live alert to a
+confirmed event without data from the future. `None` from `confirm()` means
+"looked, and it did not retrace"; the exception means "cannot look yet".
+
+### ⚠️ The archive contains no pump and dump
+
+The largest 30-minute run-up on solusdt is 1.74% and the median is 0.74%.
+There is no positive example anywhere in the capture, so the thresholds in
+`GateConfig` **cannot be validated** and are frozen at their design values.
+Correctness lives in `test_pumpdump.py`, against synthetic markets of known
+shape — clean pump and dump, a pump that never dumps, a slow organic rally, a
+volume spike with no price move, a crash with no preceding pump, the same pump
+into a deep book, the same pump on two-sided flow.
+
+Over the whole archive (6 symbols, 5.4 days, 39,372 covered bars) the gate
+produces **4 candidates**, and all four are false positives — which is the
+expected result, because nothing in this data is a pump. They are instructive
+anyway:
+
+| | opusdt 09-23 22:08 | arbusdt 09-27 00:33–00:35 |
+|---|---|---|
+| volume z | 17.7 | 65.0 |
+| what that was, in dollars | **$14,588** | **$136,668** |
+| that symbol's median minute | $2,973 | $12,882 |
+| price move | +0.77% over 5 min | +0.77% over 5 min |
+
+Both are ordinary market buys. Every leg of the conjunction is a *relative*
+measure, so on a symbol whose median minute is three thousand dollars, a
+fourteen-thousand-dollar order is a 17-MAD event — correctly, and
+meaninglessly. **The missing leg is an absolute magnitude floor**, the same
+gap `level_min_usd` already documents for resting size. It is deliberately not
+added here: picking the number without a real event to calibrate against would
+be guessing, and this is written down so the tuning pass starts from the
+measurement rather than from a hunch.
+
+The opusdt candidate also *confirmed*, retracing 267% of a **0.73%** run-up.
+That is `min_runup_pct = 0.005` behaving exactly as `features.py` says it
+will — deliberately low so the feature stays exercised on an archive with no
+pumps in it. It is noise retracing noise, not a finding.
+
+### Measured feature distributions
+
+Per symbol, over the full archive, on the bars where each feature was
+computable. This is what a later threshold pass should start from.
+
+| feature | p50 | p90 | p99 | max | past the gate |
+|---|---|---|---|---|---|
+| volume z | ~0.0 | 4.3–6.1 | 17.7–28.6 | 132–264 | 8.6–12.2% of bars |
+| price spike z | ~0.0 | 2.2 | 4.6–5.2 | 8.8–11.8 | 0.75–1.24% |
+| thin-book pctile | 0.50 | 0.92–0.94 | 1.00 | 1.00 | 20.8–23.5% |
+| OFI (5-bar) | ~0.0 | 0.38–0.50 | 0.64–0.79 | 0.86–1.00 | 0.49–2.70% |
+
+Read together: volume z fires on roughly one bar in ten, and the spike, thin
+book and OFI legs each fire on far fewer — the conjunction is doing the work,
+not any single threshold. OFI is the binding constraint on this data; only
+solusdt and avaxusdt ever reach ±0.9, and no symbol sustains it while the
+other three legs hold.
+
+---
 
 ### ⚠️ Comparing depth across snapshots
 
