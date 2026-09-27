@@ -20,7 +20,7 @@ fleeced.
 |---|---|
 | Recorder | ✅ working |
 | Feature extractor | ✅ batch path working |
-| Spoofing detector | 🔜 |
+| Spoofing detector | ✅ statistical gate working |
 | Pump & dump detector | 🔜 |
 | Nemotron cascade | 🔜 |
 | Frontend | 🔜 |
@@ -66,7 +66,7 @@ surveillance across many symbols economically possible.
 
 | Detector | Status | Notes |
 |---|---|---|
-| **Spoofing** | planned | Large orders near mid, cancelled unfilled, repeated |
+| **Spoofing** | ✅ gate | Large orders near mid, cancelled unfilled, repeated |
 | **Pump & dump** | planned | Volume z-score + one-sided flow + thin book + retracement |
 | Layering | stretch | Reuses spoofing machinery |
 | ~~Wash trading~~ | **excluded** | Requires account identity — not available on public feeds |
@@ -455,6 +455,121 @@ best bid price is unchanged.** Top of book flickers between adjacent ticks
 with tiny resting sizes, so a naive `lag(best_bid_qty)` produces enormous
 multipliers that are pure artifact — and they look exactly like dramatic
 findings. Always constrain with `best_bid = prev_bid`.
+
+---
+
+## Spoofing detector
+
+`spoofing.py` is the statistical gate for the spoofing detector — no LLM, no
+network, runs over the archive in minutes. It emits **candidates**, never
+verdicts: an invitation for the Nemotron cascade to look, nothing more.
+
+```powershell
+.\venv\Scripts\python spoofing.py                 # every symbol, last 24h
+.\venv\Scripts\python spoofing.py solusdt 120     # one symbol, 120 hours
+.\venv\Scripts\python spoofing.py --known-wall    # the 09-23 wall, conjunct by conjunct
+.\venv\Scripts\python -m pytest test_spoofing.py
+```
+
+The gate is a strict conjunction, deliberately tuned for precision over
+recall:
+
+```
+wall >= 3x band p99  AND  within 20bps of mid
+                     AND  cancelled < 500ms  AND  >= 3 occurrences in 90s
+```
+
+### ⚠️ "wall > p99" is nearly free
+
+`p99` is a percentile over single *level observations* in a 5bps price band,
+and a one-minute bar holds about a thousand of them — so roughly ten clear it
+by arithmetic. Measured on solusdt's busiest recorded hour, of 825 episodes
+that were near mid, cancelled and under 500ms, **217 cleared plain p99 and
+none cleared 3x band p99.** The magnitude multiple
+(`FeatureConfig.wall_flag_ratio`) is the only part of that conjunct doing any
+work; the bare exceedance is kept as an audit counter and nothing else.
+
+### ⚠️ Four ways a level stops being visible
+
+Only one of them is a cancellation:
+
+| departure | what happened | counted? |
+|---|---|---|
+| `cancelled` | somebody pulled it | ✅ |
+| `filled` / `partial` | it was traded through | ✗ |
+| `out_of_book` | price moved; it fell off the 20-level window | ✗ |
+| band drift | price moved; it is >20bps from mid but still in the book | ✗ |
+
+Counting either as a cancel inflates the cancel rate, and cancel rate plus
+short lifetime *is* the spoofing signal — so a trending symbol would be
+reported as spoofed the whole way up. Band drift is the one `features.py`
+cannot see, because from the episode tracker's point of view it is
+indistinguishable from a cancel.
+
+Which of the two fires depends on whether twenty levels span more or less
+than 20bps, and across the archive they are near-perfectly complementary:
+
+| symbol | avg spread | `out_of_book` | band drift | episodes |
+|---|---|---|---|---|
+| solusdt | 0.85 bps | 34,981 | 1 | 86,200 |
+| avaxusdt | 0.96 bps | 2,123 | 8 | 31,527 |
+| injusdt | 1.39 bps | 4,367 | 77,153 | 169,110 |
+| seiusdt | 1.93 bps | 386 | 44,820 | 134,993 |
+| arbusdt | 5.01 bps | 1 | 16,512 | 35,481 |
+| opusdt | 8.01 bps | 0 | 8,722 | 19,325 |
+
+On the wide-tick symbols **half of every departure is band drift**. Without
+that check arbusdt and opusdt would report ~16,500 and ~8,700 cancellations
+nobody performed.
+
+### ⚠️ One wall that wobbles is not three spoofs
+
+`level_episodes` closes an episode when size dips under its floor, so a wall
+hovering there fragments into a burst of same-price episodes — which is
+exactly the shape the repetition conjunct is looking for. Fragments separated
+by up to 300ms (two missed book updates plus jitter) are stitched back
+together before clustering. The archive's biggest wall fragments into three
+episodes 201ms apart, so a literal 200ms threshold is not enough.
+
+### The archive's best wall does not pass, and should not
+
+> **solusdt 09-23 14:53** — $3.44M resting 3.1bps from mid, 16.9x its band
+> p99, for 42.0s.
+
+It fails two conjuncts. It rested 84x longer than the 500ms limit — and it is
+not recorded as cancelled at all. Price rallied away from the bid until the
+level fell off the bottom of the twenty-level window, so the archive simply
+does not say whether anyone ever cancelled it. The frozen thresholds describe
+a *fast* spoofer and the capture's best specimen is a slow one. Widening
+`max_lifetime_ms` until it fires would be fitting a threshold to the single
+example anybody has looked at, and would still not work. Run
+`spoofing.py --known-wall` to see it walked through conjunct by conjunct.
+
+### What it actually fires on
+
+Over the whole 126h archive, six symbols (`spoofing.py --hours=200`):
+
+| symbol | episodes | events (>=3x) | events/h | candidates | candidates/h |
+|---|---|---|---|---|---|
+| solusdt | 86,200 | 104 | 0.83 | 11 | 0.087 |
+| avaxusdt | 31,527 | 148 | 1.17 | 13 | 0.103 |
+| seiusdt | 134,993 | 55 | 0.44 | 5 | 0.040 |
+| injusdt | 169,110 | 44 | 0.35 | 0 | 0 |
+| arbusdt | 35,481 | 0 | 0 | 0 | 0 |
+| opusdt | 19,325 | 0 | 0 | 0 | 0 |
+| **total** | **476,636** | **351** | **0.46** | **29** | **0.038** |
+
+About one candidate per symbol per 26 hours. For comparison, the literal
+"wall > p99" reading of the first conjunct would have produced **694
+candidates** instead of 29 — 24x the alert volume, from exactly the same
+episodes. That is what "the p99 conjunct is nearly free" costs in practice.
+
+### Reading the output
+
+Every scan prints the rejection funnel and a table of what other thresholds
+would have said. A detector that reports only what fired cannot be told apart
+from one that fires on everything, and *crying wolf is worse than nothing* is
+this project's top risk.
 
 ---
 
